@@ -60,15 +60,6 @@ const DEFAULT_SERVER_RESTART_NOTICE =
 const VIDEO_STALL_KEYFRAME_REQUEST_DELAY_MS = 2500;
 const TURN_URL_PATTERN = /^turns?:/i;
 
-const normalizeIceServerUrls = (
-  urls: RTCIceServer["urls"] | undefined,
-): string[] => {
-  if (!urls) return [];
-  return (Array.isArray(urls) ? urls : [urls])
-    .map((value) => value.trim())
-    .filter(Boolean);
-};
-
 const buildIceServerWithUrls = (
   iceServer: RTCIceServer,
   urls: string[],
@@ -99,6 +90,50 @@ const splitIceServersByType = (
   }
 
   return { stunIceServers, turnIceServers };
+};
+
+const normalizeIceServerUrls = (
+  urls: RTCIceServer["urls"] | undefined,
+): string[] => {
+  if (!urls) return [];
+  const normalizedUrls = (Array.isArray(urls) ? urls : [urls])
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(normalizedUrls));
+};
+
+const mergeIceServers = (
+  ...lists: Array<RTCIceServer[] | null | undefined>
+): RTCIceServer[] | undefined => {
+  const merged: RTCIceServer[] = [];
+  const seen = new Set<string>();
+
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+
+    for (const server of list) {
+      const urls = normalizeIceServerUrls(server.urls);
+      if (!urls.length) continue;
+
+      const key = JSON.stringify({
+        urls: [...urls].sort(),
+        username: server.username?.trim() ?? "",
+        credential:
+          typeof server.credential === "string" ? server.credential : "",
+      });
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      merged.push({
+        ...server,
+        urls: urls.length === 1 ? urls[0] : urls,
+      });
+    }
+  }
+
+  return merged.length > 0 ? merged : undefined;
 };
 
 interface UseMeetSocketOptions {
@@ -330,20 +365,14 @@ export function useMeetSocket({
       runtimeStunIceServersRef.current && runtimeStunIceServersRef.current.length > 0
         ? runtimeStunIceServersRef.current
         : MEETS_ICE_SERVERS;
-    const resolvedIceServers =
-      stunIceServers.length > 0 ? [...stunIceServers] : [];
 
-    if (useTurnFallbackRef.current) {
-      const turnIceServers =
-        runtimeTurnIceServersRef.current && runtimeTurnIceServersRef.current.length > 0
-          ? runtimeTurnIceServersRef.current
-          : MEETS_TURN_ICE_SERVERS;
-      if (turnIceServers.length > 0) {
-        resolvedIceServers.push(...turnIceServers);
-      }
-    }
+    const turnIceServers = useTurnFallbackRef.current
+      ? runtimeTurnIceServersRef.current && runtimeTurnIceServersRef.current.length > 0
+        ? runtimeTurnIceServersRef.current
+        : MEETS_TURN_ICE_SERVERS
+      : undefined;
 
-    return resolvedIceServers.length > 0 ? resolvedIceServers : undefined;
+    return mergeIceServers(stunIceServers, turnIceServers);
   }, []);
 
   const cleanupRoomResources = useCallback(
